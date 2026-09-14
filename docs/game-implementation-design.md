@@ -570,7 +570,9 @@ token=<前6位>
 
 ### 13.4 按钮数量上限
 
-QQOfficial keyboard 最多 5 行、每行 5 个按钮。实现按 25 个按钮截断：
+QQOfficial keyboard 最多 5 行、每行 5 个按钮。公开菜单用 `ButtonSpec.row` 显式分行
+（参考 `astrbot_plugin_buckshot_roulette` 的菜单：每行 2 个语义相关的按钮）；
+未指定 `row` 时每 5 个按钮自动成一行。实现按 5 行、25 个按钮截断：
 
 - 选角按钮最多 5 个；
 - 转账金额按钮 1～25，现金超过 25 百万美元时玩家需要分次转账；
@@ -617,3 +619,17 @@ QQOfficial keyboard 最多 5 行、每行 5 个按钮。实现按 25 个按钮�
   AstrBot 消息链路发送；图片发送失败不影响文本与按钮。
 - 合成使用 Pillow（AstrBot 既有依赖）；系统存在中文字体时自动在卡片下方加中文角色名，
   没有中文字体时只输出卡面。
+
+### 13.10 房间管理（v1.7.0）
+
+参考 `astrbot_plugin_buckshot_roulette` 的房间逻辑补充：
+
+- `退出房间`：仅 `LOBBY` 阶段可用；最后一人退出即删除房间快照；首领退出时把首领
+  转交给剩余的第一位玩家，并重排 `join_order`（实现里用首领 openid 重新定位
+  `leader_index`，不依赖移除前后下标一致）。
+- `关闭房间`：首领或 AstrBot 管理员可用，任意阶段都能删除房间快照。
+- 人数计数统一由 `_room_size()` 生成（`x/8 人`），创建/加入/退出/状态/关闭回复都会带上。
+- 所有指令入口最后都调用 `event.stop_event()` 与 `should_call_llm(True)`：
+  AstrBot 仅在「插件调用过 `event.send`」或「事件被 stop」时跳过默认 LLM，
+  本插件用 `post_group_message` 直发，必须显式终止事件。
+- 无空格写法（`百万美金创建`）注册为命令别名，避免匹配不到过滤器而漏进 LLM。

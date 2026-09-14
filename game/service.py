@@ -19,6 +19,8 @@ from . import help as help_module
 from . import loot as loot_module
 from . import rules
 from .models import (
+    MAX_PLAYERS,
+    MIN_PLAYERS,
     CharacterSlot,
     GameSnapshot,
     LootCard,
@@ -33,6 +35,42 @@ from .tokens import TokenAction, TokenContext, TokenSigner
 
 DEFAULT_FORCE_ROB_DELAY = 60.0
 ACTION_COMMAND_PREFIX = "百万美金 操作 "
+MENU_COMMAND_PREFIX = "百万美金 "
+
+MENU_TEXT = """## 百万美金
+3～8 人的银行抢劫桌游。所有按钮都等价于一条可以手动输入的文本指令。
+
+**大厅**：创建房间 → 队友加入 → 首领开始（3～8 人）
+**谈判**：直接在群里交涉；转账和退出是两件互不关联的独立操作
+**结算**：仍有活动槽位的玩家全部准备后自动结算、分赃，现金满 2000 万立即获胜
+
+首次游玩建议点「帮助」查看规则卡；强制抢劫等低频操作直接发送文本指令即可。"""
+
+MENU_ROWS: tuple[tuple[tuple[str, str, str], ...], ...] = (
+    (
+        ("menu_create", "创建房间", f"{MENU_COMMAND_PREFIX}创建"),
+        ("menu_join", "加入", f"{MENU_COMMAND_PREFIX}加入"),
+        ("menu_leave_room", "退出房间", f"{MENU_COMMAND_PREFIX}退出房间"),
+        ("menu_close", "关闭房间", f"{MENU_COMMAND_PREFIX}关闭"),
+    ),
+    (
+        ("menu_start", "开始游戏", f"{MENU_COMMAND_PREFIX}开始"),
+        ("menu_status", "查看状态", f"{MENU_COMMAND_PREFIX}状态"),
+    ),
+    (
+        ("menu_transfer", "转账", f"{MENU_COMMAND_PREFIX}转账"),
+        ("menu_leave", "退出本轮", f"{MENU_COMMAND_PREFIX}退出"),
+    ),
+    (
+        ("menu_ready", "准备", f"{MENU_COMMAND_PREFIX}准备"),
+        ("menu_unready", "取消准备", f"{MENU_COMMAND_PREFIX}取消准备"),
+    ),
+    (
+        ("menu_threat", "使用威胁牌", f"{MENU_COMMAND_PREFIX}使用威胁牌"),
+        ("menu_help", "帮助（规则卡）", f"{MENU_COMMAND_PREFIX}帮助"),
+    ),
+)
+"""菜单按钮：外层是行，内层是 ``(button_id, label, data)``。"""
 
 
 @dataclass(frozen=True)
@@ -46,6 +84,9 @@ class ButtonSpec:
     only_for: str | None = None
     """``None`` 表示公开按钮（``permission.type = 2``），否则为该 openid 专属按钮。"""
 
+    row: int | None = None
+    """同一 ``row`` 值的按钮排在同一行；``None`` 时由适配层每 5 个一行自动排列。"""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "button_id": self.button_id,
@@ -53,16 +94,19 @@ class ButtonSpec:
             "data": self.data,
             "visited_label": self.visited_label,
             "only_for": self.only_for,
+            "row": self.row,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ButtonSpec:
+        row = data.get("row")
         return cls(
             button_id=str(data["button_id"]),
             label=str(data["label"]),
             data=str(data["data"]),
             visited_label=str(data.get("visited_label", "已提交")),
             only_for=data.get("only_for"),
+            row=int(row) if row is not None else None,
         )
 
 
@@ -112,6 +156,8 @@ class RequestContext:
     member_openid: str
     display_name: str = ""
     message_id: str = ""
+    is_admin: bool = False
+    """发送者是 AstrBot 管理员（可关闭他人房间）。"""
 
 
 class GameService:
@@ -152,21 +198,20 @@ class GameService:
     # ------------------------------------------------------------------
 
     async def menu(self, ctx: RequestContext) -> Reply:
-        return Reply(
-            text=(
-                "## 百万美金\n"
-                "3～8 人的银行抢劫桌游。所有操作也可以直接发送文本指令。\n\n"
-                "百万美金 创建 / 加入 / 开始 / 状态\n"
-                "百万美金 转账 / 退出 / 准备 / 取消准备\n"
-                "百万美金 使用威胁牌 / 强制抢劫 / 帮助"
-            ),
-            buttons=[
-                _public_button("menu_create", "创建", "百万美金创建"),
-                _public_button("menu_join", "加入", "百万美金加入"),
-                _public_button("menu_start", "开始", "百万美金开始"),
-                _public_button("menu_status", "状态", "百万美金状态"),
-            ],
-        )
+        """公开菜单：Markdown 说明 + 分行按钮组，所有按钮等价于文本指令。"""
+        buttons: list[ButtonSpec] = []
+        for row_index, row in enumerate(MENU_ROWS):
+            for button_id, label, data in row:
+                buttons.append(
+                    ButtonSpec(
+                        button_id=button_id,
+                        label=label,
+                        data=data,
+                        visited_label=label,
+                        row=row_index,
+                    )
+                )
+        return Reply(text=MENU_TEXT, buttons=buttons)
 
     async def create(self, ctx: RequestContext) -> Reply:
         async with self._lock_for(ctx.platform_id, ctx.group_openid):
@@ -198,12 +243,14 @@ class GameService:
                 self._repo.store_snapshot(conn, snapshot)
                 reply = Reply(
                     text=(
-                        f"已创建房间，{snapshot.players[0].display_name} 成为首领。\n"
-                        "其他玩家发送「百万美金 加入」，人齐后首领发送「百万美金 开始」。"
+                        f"已创建房间（人数 {_room_size(snapshot)}），"
+                        f"{snapshot.players[0].display_name} 成为首领。\n"
+                        f"其他玩家发送「百万美金 加入」；"
+                        f"至少 {MIN_PLAYERS} 人后首领发送「百万美金 开始」。"
                     ),
                     buttons=[
-                        _public_button("lobby_join", "加入", "百万美金加入"),
-                        _public_button("lobby_start", "开始", "百万美金开始"),
+                        _public_button("lobby_join", "加入", f"{MENU_COMMAND_PREFIX}加入"),
+                        _public_button("lobby_start", "开始", f"{MENU_COMMAND_PREFIX}开始"),
                     ],
                 )
                 return self._store(conn, ctx, reply)
@@ -232,9 +279,8 @@ class GameService:
                 self._repo.store_snapshot(conn, snapshot)
                 reply = Reply(
                     text=(
-                        f"{player.display_name} 加入了房间"
-                        f"（{len(snapshot.players)}/8）。\n"
-                        "房主发送「百万美金 开始」即可开局。"
+                        f"{player.display_name} 加入了房间（人数 {_room_size(snapshot)}）。\n"
+                        f"{_start_hint(snapshot)}"
                     )
                 )
                 return self._store(conn, ctx, reply)
@@ -253,11 +299,14 @@ class GameService:
                 if leader is None or leader.member_openid != ctx.member_openid:
                     return self._store(conn, ctx, Reply("只有首领可以开始游戏。"))
                 player_count = len(snapshot.players)
-                if not 3 <= player_count <= 8:
+                if not MIN_PLAYERS <= player_count <= MAX_PLAYERS:
                     return self._store(
                         conn,
                         ctx,
-                        Reply(f"人数必须是 3～8 人，当前 {player_count} 人。"),
+                        Reply(
+                            f"人数必须是 {MIN_PLAYERS}～{MAX_PLAYERS} 人，"
+                            f"当前 {player_count} 人，{_start_hint(snapshot)}"
+                        ),
                     )
 
                 snapshot.loot_deck = list(
@@ -289,6 +338,120 @@ class GameService:
         if not images:
             text += "\n\n（规则卡图片缺失，请联系管理员检查插件文件。）"
         return Reply(text=text, images=images)
+
+    async def leave_room(self, ctx: RequestContext) -> Reply:
+        """大厅阶段退出房间。
+
+        参考 ``astrbot_plugin_buckshot_roulette`` 的房间逻辑：
+
+        * 仅开局前可退出；
+        * 最后一人退出时房间自动关闭；
+        * 首领退出时把首领转交给剩余的第一位玩家。
+        """
+        async with self._lock_for(ctx.platform_id, ctx.group_openid):
+            with self._repo.transaction() as conn:
+                replay = self._replay(conn, ctx)
+                if replay is not None:
+                    return replay
+                snapshot = self._repo.load_snapshot(
+                    conn, ctx.platform_id, ctx.group_openid
+                )
+                if snapshot is None:
+                    return self._store(conn, ctx, Reply("本群没有进行中的对局。"))
+                if snapshot.phase is not Phase.LOBBY:
+                    return self._store(
+                        conn,
+                        ctx,
+                        Reply("对局已经开始，不能退出房间（谈判阶段请用「百万美金 退出」）。"),
+                    )
+
+                player = snapshot.player(ctx.member_openid)
+                if player is None:
+                    return self._store(conn, ctx, Reply("你还没有加入本局。"))
+
+                was_leader = snapshot.leader
+                leader_left = (
+                    was_leader is not None
+                    and was_leader.member_openid == player.member_openid
+                )
+                snapshot.players.remove(player)
+
+                if not snapshot.players:
+                    self._repo.delete_snapshot(
+                        conn, ctx.platform_id, ctx.group_openid
+                    )
+                    return self._store(
+                        conn,
+                        ctx,
+                        Reply(
+                            f"{player.display_name} 退出了房间，房间已关闭（0/{MAX_PLAYERS} 人）。"
+                        ),
+                    )
+
+                for index, item in enumerate(snapshot.players):
+                    item.join_order = index
+                if leader_left:
+                    snapshot.leader_index = 0
+                else:
+                    snapshot.leader_index = next(
+                        (
+                            index
+                            for index, item in enumerate(snapshot.players)
+                            if was_leader is not None
+                            and item.member_openid == was_leader.member_openid
+                        ),
+                        0,
+                    )
+                self._repo.store_snapshot(conn, snapshot)
+                leader = snapshot.leader
+                leader_text = leader.display_name if leader is not None else "未知"
+                extra = "首领已转交给该玩家。" if leader_left else ""
+                return self._store(
+                    conn,
+                    ctx,
+                    Reply(
+                        f"{player.display_name} 退出了房间（人数 {_room_size(snapshot)}）。"
+                        f"{extra}\n当前首领：{leader_text}。{_start_hint(snapshot)}"
+                    ),
+                )
+
+    async def close_room(self, ctx: RequestContext) -> Reply:
+        """关闭当前群房间：首领或 AstrBot 管理员可用，任何阶段都可以关闭。"""
+        async with self._lock_for(ctx.platform_id, ctx.group_openid):
+            with self._repo.transaction() as conn:
+                replay = self._replay(conn, ctx)
+                if replay is not None:
+                    return replay
+                snapshot = self._repo.load_snapshot(
+                    conn, ctx.platform_id, ctx.group_openid
+                )
+                if snapshot is None:
+                    return self._store(conn, ctx, Reply("本群没有进行中的对局。"))
+
+                leader = snapshot.leader
+                is_leader = (
+                    leader is not None and leader.member_openid == ctx.member_openid
+                )
+                if not (ctx.is_admin or is_leader):
+                    return self._store(
+                        conn,
+                        ctx,
+                        Reply("只有首领或管理员可以关闭房间。"),
+                    )
+
+                names = "、".join(player.display_name for player in snapshot.players)
+                size = _room_size(snapshot)
+                self._repo.delete_snapshot(
+                    conn, ctx.platform_id, ctx.group_openid
+                )
+                return self._store(
+                    conn,
+                    ctx,
+                    Reply(
+                        f"房间已关闭（关闭前 {size}：{names}）。\n"
+                        "需要重新开始时发送「百万美金 创建」。"
+                    ),
+                )
 
     async def status(self, ctx: RequestContext) -> Reply:
         async with self._lock_for(ctx.platform_id, ctx.group_openid):
@@ -897,6 +1060,21 @@ def _token_context(snapshot: GameSnapshot, player: Player) -> TokenContext:
     )
 
 
+def _room_size(snapshot: GameSnapshot) -> str:
+    """房间人数计数，例如 ``3/8 人``。"""
+    return f"{len(snapshot.players)}/{MAX_PLAYERS} 人"
+
+
+def _start_hint(snapshot: GameSnapshot) -> str:
+    """根据当前人数给出开局限定提示。"""
+    count = len(snapshot.players)
+    if count < MIN_PLAYERS:
+        return f"还需要 {MIN_PLAYERS - count} 人才能开局（最少 {MIN_PLAYERS} 人）。"
+    if snapshot.phase is Phase.LOBBY:
+        return "人数已满足，首领发送「百万美金 开始」即可开局。"
+    return ""
+
+
 def _table_card_keys(snapshot: GameSnapshot) -> list[str]:
     """本轮中心牌堆的卡面键。
 
@@ -957,6 +1135,7 @@ def _opening_text(snapshot: GameSnapshot, card: LootCard | None) -> str:
 
 def _status_text(snapshot: GameSnapshot) -> str:
     lines = [
+        f"人数：{_room_size(snapshot)}",
         f"阶段：{snapshot.phase.value}",
         f"回合：{snapshot.round_number} / {len(snapshot.loot_deck) or 8}",
     ]

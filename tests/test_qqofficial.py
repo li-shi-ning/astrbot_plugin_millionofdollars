@@ -452,3 +452,30 @@ async def test_send_reply_with_reveal_cards_sends_one_image_plus_text(
     assert len(sent) == 1  # 两张角色卡合并成一条图片消息
     assert len(calls) == 1
     assert "司机×2" in calls[0]["content"]
+
+
+def test_keyboard_uses_explicit_rows() -> None:
+    buttons = [
+        ButtonSpec("a", "创建", "百万美金 创建", row=0),
+        ButtonSpec("b", "加入", "百万美金 加入", row=0),
+        ButtonSpec("c", "开始", "百万美金 开始", row=1),
+    ]
+
+    keyboard = qqofficial.build_keyboard(buttons)
+
+    rows = keyboard["content"]["rows"]
+    assert [len(row["buttons"]) for row in rows] == [2, 1]
+    assert [row["buttons"][0]["id"] for row in rows] == ["a", "c"]
+
+
+def test_keyboard_splits_oversized_row_and_caps_rows() -> None:
+    buttons = [
+        ButtonSpec(f"b{index}", f"按钮{index}", "百万美金 状态", row=index // 7)
+        for index in range(20)
+    ]
+
+    keyboard = qqofficial.build_keyboard(buttons)
+
+    rows = keyboard["content"]["rows"]
+    assert len(rows) <= qqofficial.MAX_ROWS
+    assert all(len(row["buttons"]) <= qqofficial.BUTTONS_PER_ROW for row in rows)

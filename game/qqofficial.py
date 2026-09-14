@@ -44,6 +44,7 @@ QQOFFICIAL_MESSAGE_EVENT_MODULE_PREFIXES = (
 
 MAX_BUTTONS = 25
 BUTTONS_PER_ROW = 5
+MAX_ROWS = 5
 UNSUPPORT_TIPS = "当前客户端不支持该按钮"
 
 
@@ -128,12 +129,37 @@ def build_button(spec: ButtonSpec) -> dict[str, Any]:
 
 
 def build_keyboard(buttons: list[ButtonSpec]) -> dict[str, Any] | None:
+    """把按钮排成 QQ keyboard。
+
+    * 指定了 ``row`` 的按钮按行分组（同一行最多 ``BUTTONS_PER_ROW`` 个）；
+    * 没有指定 ``row`` 时每 ``BUTTONS_PER_ROW`` 个按钮自动成一行；
+    * 总行数不超过 ``MAX_ROWS``，总按钮数不超过 ``MAX_BUTTONS``。
+    """
     if not buttons:
         return None
     limited = buttons[:MAX_BUTTONS]
+
+    groups: list[list[ButtonSpec]] = []
+    if any(item.row is not None for item in limited):
+        grouped: dict[int, list[ButtonSpec]] = {}
+        for index, item in enumerate(limited):
+            key = item.row if item.row is not None else 10_000 + index
+            grouped.setdefault(key, []).append(item)
+        for key in sorted(grouped):
+            group = grouped[key]
+            groups.extend(
+                group[index : index + BUTTONS_PER_ROW]
+                for index in range(0, len(group), BUTTONS_PER_ROW)
+            )
+    else:
+        groups = [
+            limited[index : index + BUTTONS_PER_ROW]
+            for index in range(0, len(limited), BUTTONS_PER_ROW)
+        ]
+
     rows = [
-        {"buttons": [build_button(item) for item in limited[index : index + BUTTONS_PER_ROW]]}
-        for index in range(0, len(limited), BUTTONS_PER_ROW)
+        {"buttons": [build_button(item) for item in group]}
+        for group in groups[:MAX_ROWS]
     ]
     return {"content": {"rows": rows}}
 

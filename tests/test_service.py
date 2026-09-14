@@ -620,3 +620,160 @@ async def test_snitch_selection_defers_the_reveal_image(service: GameService) ->
 
     assert len(final.reveal_cards) == 5
     assert final.reveal_cards.count("card_back") == 1
+
+
+async def test_menu_matches_the_reference_layout(service: GameService) -> None:
+    """菜单参考恶魔轮盘插件：Markdown 说明 + 分行按钮组，data 等价文本指令。"""
+    reply = await service.menu(ctx("a", "menu-1"))
+
+    assert reply.text.startswith("## 百万美金")
+    assert "大厅" in reply.text and "谈判" in reply.text and "结算" in reply.text
+    assert "帮助" in reply.text
+
+    # 5 行：第一行房间管理 4 个按钮，其余每行 2 个
+    rows: dict[int, list] = {}
+    for button in reply.buttons:
+        rows.setdefault(button.row, []).append(button)
+    assert sorted(rows) == [0, 1, 2, 3, 4]
+    assert [len(rows[index]) for index in sorted(rows)] == [4, 2, 2, 2, 2]
+
+    # 公开按钮 + 按钮文案即 visited_label + data 是可手动输入的指令
+    for button in reply.buttons:
+        assert button.only_for is None
+        assert button.visited_label == button.label
+        assert button.data.startswith("百万美金 ")
+        assert button.button_id.startswith("menu_")
+
+    labels = [button.label for button in reply.buttons]
+    assert labels[:4] == ["创建房间", "加入", "退出房间", "关闭房间"]
+    assert "帮助（规则卡）" in labels
+    assert next(b.data for b in reply.buttons if b.label == "帮助（规则卡）") == "百万美金 帮助"
+
+
+# ----------------------------------------------------------------------
+# 房间管理：人数计数 / 退出房间 / 关闭房间
+# ----------------------------------------------------------------------
+
+
+async def test_lobby_replies_show_player_count(service: GameService) -> None:
+    created = await service.create(ctx("a", "cnt-1", "小明"))
+    assert "人数 1/8 人" in created.text
+    assert "至少 3 人" in created.text
+
+    joined = await service.join(ctx("b", "cnt-2", "小红"))
+    assert "人数 2/8 人" in joined.text
+    assert "还需要 1 人才能开局" in joined.text
+
+    await service.join(ctx("c", "cnt-3", "小刚"))
+    third = await service.join(ctx("d", "cnt-4", "小强"))
+    assert "人数 4/8 人" in third.text
+    assert "人数已满足" in third.text
+
+    status = await service.status(ctx("a", "cnt-5"))
+    assert "人数：4/8 人" in status.text
+
+
+async def test_start_reports_how_many_players_are_missing(
+    service: GameService,
+) -> None:
+    await make_lobby(service, ["a", "b"])
+    reply = await service.start(ctx("a", "need-more"))
+
+    assert "当前 2 人" in reply.text
+    assert "还需要 1 人才能开局" in reply.text
+
+
+async def test_leave_room_removes_player_and_tracks_count(
+    service: GameService,
+) -> None:
+    await make_lobby(service, ["a", "b", "c"])
+    snapshot = service._repo.load("qq_official_instance", "group-1")
+    assert snapshot is not None and len(snapshot.players) == 3
+
+    reply = await service.leave_room(ctx("b", "leave-room-1", "小红"))
+
+    assert "退出了房间" in reply.text
+    assert "人数 2/8 人" in reply.text
+    snapshot = service._repo.load("qq_official_instance", "group-1")
+    assert snapshot is not None
+    assert [player.member_openid for player in snapshot.players] == ["a", "c"]
+    assert [player.join_order for player in snapshot.players] == [0, 1]
+    # 非首领退出，首领不变
+    assert snapshot.leader is not None and snapshot.leader.member_openid == "a"
+
+    # 没加入的人不能退出
+    assert "还没有加入" in (await service.leave_room(ctx("z", "leave-room-2"))).text
+
+
+async def test_leave_room_transfers_leadership(service: GameService) -> None:
+    await make_lobby(service, ["a", "b", "c", "d"])
+
+    reply = await service.leave_room(ctx("a", "leave-leader"))
+
+    assert "首领已转交" in reply.text
+    snapshot = service._repo.load("qq_official_instance", "group-1")
+    assert snapshot is not None
+    assert snapshot.leader is not None
+    assert snapshot.leader.member_openid == "b"
+    # 转交后仍可正常开局
+    assert "游戏开始" in (await service.start(ctx("b", "start-after-leader-left"))).text
+
+
+async def test_leave_room_closes_the_room_when_empty(service: GameService) -> None:
+    await make_lobby(service, ["a"])
+
+    reply = await service.leave_room(ctx("a", "leave-last"))
+
+    assert "房间已关闭" in reply.text
+    assert service._repo.load("qq_official_instance", "group-1") is None
+    # 关闭后可以重新创建
+    assert "已创建房间" in (await service.create(ctx("b", "recreate"))).text
+
+
+async def test_leave_room_is_lobby_only(service: GameService) -> None:
+    await enter_negotiation(
+        service,
+        {"a": "driver", "b": "brute", "c": "crook", "d": "driver"},
+    )
+
+    reply = await service.leave_room(ctx("a", "leave-too-late"))
+
+    assert "对局已经开始" in reply.text
+    assert "百万美金 退出" in reply.text
+
+
+async def test_close_room_requires_leader_or_admin(service: GameService) -> None:
+    await make_lobby(service, ["a", "b", "c"])
+
+    assert "只有首领或管理员" in (await service.close_room(ctx("b", "close-b"))).text
+
+    admin = RequestContext(
+        platform_id="qq_official_instance",
+        group_openid="group-1",
+        member_openid="b",
+        display_name="小红",
+        message_id="close-admin",
+        is_admin=True,
+    )
+    closed = await service.close_room(admin)
+    assert "房间已关闭" in closed.text
+    assert "3/8 人" in closed.text
+    assert service._repo.load("qq_official_instance", "group-1") is None
+
+
+async def test_close_room_works_mid_game(service: GameService) -> None:
+    await enter_negotiation(
+        service,
+        {"a": "driver", "b": "brute", "c": "crook", "d": "driver"},
+    )
+
+    reply = await service.close_room(ctx("a", "close-mid"))
+
+    assert "房间已关闭" in reply.text
+    assert service._repo.load("qq_official_instance", "group-1") is None
+
+
+async def test_close_room_without_game(service: GameService) -> None:
+    reply = await service.close_room(ctx("a", "close-empty"))
+
+    assert "没有进行中的对局" in reply.text
