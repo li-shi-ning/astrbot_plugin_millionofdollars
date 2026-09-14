@@ -54,6 +54,18 @@ class Role(StrEnum):
     MASTERMIND = "mastermind"
 
 
+PHASE_LABELS: dict[str, str] = {
+    Phase.LOBBY: "大厅",
+    Phase.ROLE_SELECTION: "选角",
+    Phase.NEGOTIATION: "谈判",
+    Phase.SNITCH_SELECTION: "告密人指定",
+    Phase.RESOLVING: "抢劫结算",
+    Phase.ROUND_END: "回合结束",
+    Phase.GAME_OVER: "游戏结束",
+}
+"""给玩家看的阶段中文名，避免把内部英文取值直接展示出来。"""
+
+
 ROLE_LABELS: dict[str, str] = {
     Role.DRIVER: "司机",
     Role.BRUTE: "暴徒",
@@ -69,6 +81,17 @@ class SnapshotError(ValueError):
 
 class RuleError(ValueError):
     """玩法规则校验失败。"""
+
+
+def phase_label(phase: str | Phase | None) -> str:
+    """返回阶段的中文名，未知阶段返回原值。"""
+    if phase is None:
+        return ""
+    try:
+        key = Phase(phase)
+    except ValueError:
+        return str(phase)
+    return PHASE_LABELS.get(key, str(phase))
 
 
 def role_label(role: str | Role | None) -> str:

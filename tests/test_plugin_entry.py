@@ -162,7 +162,7 @@ def test_plugin_can_start_a_game_with_the_verified_deck(
     assert "已创建房间" in created.text
     assert "游戏开始" in started.text
     assert len(started.extra) == 4  # 每位玩家一条秘密选角消息
-    assert "阶段：role_selection" in status.text
+    assert "阶段：选角" in status.text
     assert re.search(r"赃物：(8|9|10|12) 百万美元", status.text)
 
 

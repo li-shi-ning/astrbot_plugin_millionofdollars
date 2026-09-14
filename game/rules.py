@@ -207,7 +207,7 @@ def transfer(
     if sender is None or recipient is None:
         raise RuleError("转账双方必须都在本局房间内。")
     if not sender.has_active_slot():
-        raise RuleError("你的人物槽位已退出，不能转账。")
+        raise RuleError("你的人物已经退出，不能转账。")
     if amount > sender.cash:
         raise RuleError(
             f"现金不足：你只有 {sender.cash} 百万美元，无法转账 {amount}。"
@@ -235,9 +235,9 @@ def leave_slot(
         raise RuleError("你不在本局房间内。")
     slot = snapshot.find_slot(slot_id)
     if slot is None or player.slot(slot_id) is None:
-        raise RuleError("找不到该人物槽位。")
+        raise RuleError("找不到这个人物。")
     if not slot.active:
-        raise RuleError("该人物槽位已经退出或被淘汰。")
+        raise RuleError("这个人物已经退出或被淘汰。")
 
     slot.active = False
     refund_ante(player, slot)

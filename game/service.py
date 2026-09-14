@@ -28,6 +28,7 @@ from .models import (
     Player,
     Role,
     RuleError,
+    phase_label,
     role_label,
 )
 from .repository import GameRepository
@@ -38,11 +39,11 @@ ACTION_COMMAND_PREFIX = "百万美金 操作 "
 MENU_COMMAND_PREFIX = "百万美金 "
 
 MENU_TEXT = """## 百万美金
-3～8 人的银行抢劫桌游。所有按钮都等价于一条可以手动输入的文本指令。
+3～8 人的银行抢劫桌游。每个按钮都对应一条可以直接发送的指令。
 
 **大厅**：创建房间 → 队友加入 → 首领开始（3～8 人）
 **谈判**：直接在群里交涉；转账和退出是两件互不关联的独立操作
-**结算**：仍有活动槽位的玩家全部准备后自动结算、分赃，现金满 2000 万立即获胜
+**结算**：还留在场上的玩家全部准备后自动结算、分赃，现金满 2000 万立即获胜
 
 首次游玩建议点「帮助」查看规则卡；强制抢劫等低频操作直接发送文本指令即可。"""
 
@@ -243,8 +244,8 @@ class GameService:
                 self._repo.store_snapshot(conn, snapshot)
                 reply = Reply(
                     text=(
-                        f"已创建房间（人数 {_room_size(snapshot)}），"
-                        f"{snapshot.players[0].display_name} 成为首领。\n"
+                        f"已创建房间（{_room_size(snapshot)}），"
+                        f"{snapshot.players[0].display_name}成为首领。\n"
                         f"其他玩家发送「百万美金 加入」；"
                         f"至少 {MIN_PLAYERS} 人后首领发送「百万美金 开始」。"
                     ),
@@ -279,7 +280,7 @@ class GameService:
                 self._repo.store_snapshot(conn, snapshot)
                 reply = Reply(
                     text=(
-                        f"{player.display_name} 加入了房间（人数 {_room_size(snapshot)}）。\n"
+                        f"{player.display_name}加入了房间（{_room_size(snapshot)}）。\n"
                         f"{_start_hint(snapshot)}"
                     )
                 )
@@ -384,7 +385,7 @@ class GameService:
                         conn,
                         ctx,
                         Reply(
-                            f"{player.display_name} 退出了房间，房间已关闭（0/{MAX_PLAYERS} 人）。"
+                            f"{player.display_name}退出了房间，房间已关闭（0/{MAX_PLAYERS} 人）。"
                         ),
                     )
 
@@ -410,7 +411,7 @@ class GameService:
                     conn,
                     ctx,
                     Reply(
-                        f"{player.display_name} 退出了房间（人数 {_room_size(snapshot)}）。"
+                        f"{player.display_name}退出了房间（{_room_size(snapshot)}）。"
                         f"{extra}\n当前首领：{leader_text}。{_start_hint(snapshot)}"
                     ),
                 )
@@ -595,7 +596,7 @@ class GameService:
                     ctx,
                     Reply(
                         text=(
-                            "你有两个人物槽位，选择要退出的那一个。"
+                            "你这一轮有两个人物，选择要退出的那一个。"
                             "退出按钮只对你自己可见，点击后需要发送才会生效。"
                         ),
                         buttons=buttons,
@@ -614,7 +615,7 @@ class GameService:
                     return self._store(conn, ctx, Reply("只有谈判阶段可以准备。"))
 
                 player.ready = ready
-                events = [f"{player.display_name} {'已准备' if ready else '取消准备'}。"]
+                events = [f"{player.display_name}{'已准备' if ready else '取消准备'}。"]
                 reveal_cards: list[str] = []
                 if ready and _all_ready(snapshot):
                     events.append("全员准备完毕，立即结算本轮抢劫。")
@@ -686,7 +687,7 @@ class GameService:
                     if slot.active
                 ]
                 if not targets:
-                    return self._store(conn, ctx, Reply("当前没有可查看的活动人物槽位。"))
+                    return self._store(conn, ctx, Reply("当前没有可查看的人物。"))
 
                 multiple = rules.slots_per_player(len(snapshot.players)) > 1
                 buttons = []
@@ -832,7 +833,7 @@ class GameService:
             self._bump(snapshot, player)
             ready = matched.action == "ready"
             player.ready = ready
-            events = [f"{player.display_name} {'已准备' if ready else '取消准备'}。"]
+            events = [f"{player.display_name}{'已准备' if ready else '取消准备'}。"]
             if ready and _all_ready(snapshot):
                 events.append("全员准备完毕，立即结算本轮抢劫。")
                 resolved, reveal_cards = self._resolve(snapshot)
@@ -866,7 +867,7 @@ class GameService:
         free.role = role
         self._bump(snapshot, player)
 
-        events = [f"{player.display_name} 已提交角色选择。"]
+        events = [f"{player.display_name}已提交角色选择。"]
         if _all_roles_chosen(snapshot):
             card = snapshot.current_loot
             if card is None:  # pragma: no cover - 开局必定有牌
@@ -1008,7 +1009,7 @@ class GameService:
         if player is None:
             raise RuleError("你不在本局房间内。")
         if snapshot.phase is not Phase.LOBBY and not player.has_active_slot():
-            raise RuleError("你的人物槽位已经退出或被淘汰，本阶段无法行动。")
+            raise RuleError("你的人物已经退出或淘汰，本阶段无法行动。")
         return player
 
     def _replay(self, conn: Any, ctx: RequestContext) -> Reply | None:
@@ -1060,9 +1061,14 @@ def _token_context(snapshot: GameSnapshot, player: Player) -> TokenContext:
     )
 
 
+def _room_ratio(snapshot: GameSnapshot) -> str:
+    """房间人数比例，例如 ``3/8``。"""
+    return f"{len(snapshot.players)}/{MAX_PLAYERS}"
+
+
 def _room_size(snapshot: GameSnapshot) -> str:
     """房间人数计数，例如 ``3/8 人``。"""
-    return f"{len(snapshot.players)}/{MAX_PLAYERS} 人"
+    return f"{_room_ratio(snapshot)} 人"
 
 
 def _start_hint(snapshot: GameSnapshot) -> str:
@@ -1135,10 +1141,13 @@ def _opening_text(snapshot: GameSnapshot, card: LootCard | None) -> str:
 
 def _status_text(snapshot: GameSnapshot) -> str:
     lines = [
-        f"人数：{_room_size(snapshot)}",
-        f"阶段：{snapshot.phase.value}",
-        f"回合：{snapshot.round_number} / {len(snapshot.loot_deck) or 8}",
+        f"人数：{_room_ratio(snapshot)}",
+        f"阶段：{phase_label(snapshot.phase)}",
     ]
+    if snapshot.phase is not Phase.LOBBY:
+        lines.append(
+            f"回合：第 {snapshot.round_number} 回合 / 共 {len(snapshot.loot_deck) or 8} 回合"
+        )
     leader = snapshot.leader
     if leader is not None:
         lines.append(f"首领：{leader.display_name}")
@@ -1154,14 +1163,17 @@ def _status_text(snapshot: GameSnapshot) -> str:
         lines.append(f"公开角色：{counts or '无'}")
     lines.append("玩家：")
     for player in snapshot.players:
-        flags = []
-        if player.has_active_slot():
-            flags.append("在场" if not player.ready else "已准备")
+        if snapshot.phase is Phase.LOBBY:
+            flags = ["已加入"]
+        elif player.has_active_slot():
+            flags = ["已准备" if player.ready else "在场"]
+        elif any(slot.eliminated for slot in player.slots):
+            flags = ["已淘汰"]
         else:
-            flags.append("已退出")
+            flags = ["已退出"]
         lines.append(
-            f"- {player.display_name}：{player.cash} 百万美元"
-            f"｜威胁牌 {player.threat_cards}｜{'/'.join(flags)}"
+            f"- {player.display_name}：{player.cash} 百万美元，"
+            f"威胁牌 {player.threat_cards} 张，{'、'.join(flags)}"
         )
     if snapshot.phase is Phase.GAME_OVER and snapshot.winners:
         names = [

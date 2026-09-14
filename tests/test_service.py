@@ -298,7 +298,7 @@ async def test_ready_requires_all_participants(service: GameService) -> None:
     )
 
     first = await service.set_ready(ctx("a", "ready-a"), True)
-    assert first.text.startswith("a 已准备")
+    assert first.text.startswith("a已准备")
 
     await service.set_ready(ctx("b", "ready-b"), True)
     await service.set_ready(ctx("c", "ready-c"), True)
@@ -657,20 +657,24 @@ async def test_menu_matches_the_reference_layout(service: GameService) -> None:
 
 async def test_lobby_replies_show_player_count(service: GameService) -> None:
     created = await service.create(ctx("a", "cnt-1", "小明"))
-    assert "人数 1/8 人" in created.text
+    assert "（1/8 人）" in created.text
     assert "至少 3 人" in created.text
 
     joined = await service.join(ctx("b", "cnt-2", "小红"))
-    assert "人数 2/8 人" in joined.text
+    assert "（2/8 人）" in joined.text
     assert "还需要 1 人才能开局" in joined.text
 
     await service.join(ctx("c", "cnt-3", "小刚"))
     third = await service.join(ctx("d", "cnt-4", "小强"))
-    assert "人数 4/8 人" in third.text
+    assert "（4/8 人）" in third.text
     assert "人数已满足" in third.text
 
     status = await service.status(ctx("a", "cnt-5"))
-    assert "人数：4/8 人" in status.text
+    assert "人数：4/8" in status.text
+    # 大厅阶段显示「已加入」，不显示回合数
+    assert "已加入" in status.text
+    assert "已退出" not in status.text
+    assert "回合" not in status.text
 
 
 async def test_start_reports_how_many_players_are_missing(
@@ -693,7 +697,7 @@ async def test_leave_room_removes_player_and_tracks_count(
     reply = await service.leave_room(ctx("b", "leave-room-1", "小红"))
 
     assert "退出了房间" in reply.text
-    assert "人数 2/8 人" in reply.text
+    assert "（2/8 人）" in reply.text
     snapshot = service._repo.load("qq_official_instance", "group-1")
     assert snapshot is not None
     assert [player.member_openid for player in snapshot.players] == ["a", "c"]
@@ -777,3 +781,32 @@ async def test_close_room_without_game(service: GameService) -> None:
     reply = await service.close_room(ctx("a", "close-empty"))
 
     assert "没有进行中的对局" in reply.text
+
+
+async def test_player_facing_text_has_no_internal_jargon(
+    service: GameService,
+) -> None:
+    """玩家看到的文字里不应出现内部英文取值或实现术语。"""
+    await make_lobby(service, ["a", "b", "c"])
+
+    texts = [
+        (await service.menu(ctx("a", "jargon-1"))).text,
+        (await service.help(ctx("a", "jargon-2"))).text,
+        (await service.status(ctx("a", "jargon-3"))).text,
+    ]
+    started = await service.start(ctx("a", "jargon-4"))
+    texts.append(started.text)
+
+    for text in texts:
+        for internal in (
+            "role_selection",
+            "snitch_selection",
+            "round_end",
+            "game_over",
+            "phase",
+            "槽位",
+        ):
+            assert internal not in text, f"玩家文案里出现了内部术语：{internal}\n{text}"
+
+    # 阶段用中文展示
+    assert "阶段：选角" in (await service.status(ctx("a", "jargon-5"))).text
