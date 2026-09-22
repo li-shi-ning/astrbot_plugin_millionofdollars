@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,15 +22,22 @@ LABEL_HEIGHT = 46
 LABEL_BACKGROUND = (24, 26, 32)
 LABEL_COLOR = (240, 240, 240)
 
-CJK_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    "/usr/share/fonts/truetype/arphic/uming.ttc",
-    "C:/Windows/Fonts/msyh.ttc",
-    "/System/Library/Fonts/PingFang.ttc",
-)
+def _cjk_font_candidates() -> tuple[str, ...]:
+    candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+    windir = os.environ.get("WINDIR")
+    if windir:
+        candidates.insert(0, str(Path(windir) / "Fonts" / "msyh.ttc"))
+    return tuple(candidates)
+
+
+CJK_FONT_CANDIDATES = _cjk_font_candidates()
 
 
 class CardImageError(RuntimeError):
